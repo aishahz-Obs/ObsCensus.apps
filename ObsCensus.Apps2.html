@@ -1,0 +1,900 @@
+import React, { useState, useEffect, useMemo } from 'react';
+import { 
+  Baby, Activity, PieChart as ChartIcon, ClipboardList, Download, 
+  UploadCloud, Calendar, AlertCircle, Settings, Lock, Mail, Users, AlertTriangle
+} from 'lucide-react';
+import { 
+  PieChart, Pie, Cell, 
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
+  LineChart, Line
+} from 'recharts';
+
+// --- FIREBASE SETUP ---
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
+import { getFirestore, collection, onSnapshot, addDoc, doc, deleteDoc } from 'firebase/firestore';
+
+// !!! REPLACE THIS WITH YOUR ACTUAL FIREBASE CONFIG FROM STEP 3 !!!
+const firebaseConfig = {
+  apiKey: "YOUR_API_KEY",
+  authDomain: "your-app.firebaseapp.com",
+  projectId: "your-app-id",
+  storageBucket: "your-app.appspot.com",
+  messagingSenderId: "YOUR_SENDER_ID",
+  appId: "YOUR_APP_ID"
+};
+
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+
+// --- Constants & Options ---
+const RACES = ['Malay', 'Chinese', 'Indian', 'Others'];
+const GESTATION_OPTS = ['> 37', '< 37'];
+const PARITY_OPTS = ['Nulliparous', 'Multiparous'];
+const SCAR_OPTS = ['No previous scar', '1 previous scar', '2 previous scars', '> 2 previous scars'];
+const FETUS_OPTS = ['Singleton', 'Multiple'];
+const PRESENTATION_OPTS = ['Cephalic', 'Breech', 'Abnormal lie'];
+const ONSET_OPTS = ['Spontaneous', 'Induced', 'Pre Labour CS'];
+const CS_TYPES = ['EMLSCS', 'ELLSCS'];
+const EBL_OPTS = ['<500', '500 - 1000', '>1000'];
+const APGAR_OPTS = ['>7', '<7'];
+const BIRTH_WEIGHT_OPTS = ['< 3 kg', '3-4 kg', '> 4 kg'];
+const NICU_OPTS = ['Yes', 'No'];
+const BABY_OUTCOME_OPTS = ['Alive', 'FSB', 'MSB', 'NND'];
+
+const ADDITIONAL_PROCEDURES = ['No additional Procedure', 'BTL', 'PPIUCD', 'Hysterotomy', 'Hysterectomy', 'Others'];
+const CS_INDICATIONS = [
+  'Fetal Compromise / Distress', 
+  'Failure to Progress', 
+  'Previous CS (x1, x2, etc)', 
+  'Breech / Malpresentation', 
+  'Placenta Praevia', 
+  'Cephalopelvic Disproportion (CPD)',
+  'Maternal Request',
+  'Failed Instrumental Delivery',
+  'Others'
+];
+
+const ROBSON_CATEGORIES = [
+  '1', '2a', '2b', '3', '4a', '4b', 
+  '5a', '5b', '5c', '6a', '6b', '6c', 
+  '7a', '7b', '7c', '8a', '8b', '8c', 
+  '9a', '9b', '9c', '10a', '10b', '10c'
+];
+
+const PIE_COLORS = { 'Vaginal Delivery': '#71717a', 'Caesarean Section': '#ffffff' }; 
+const CHART_GRID_COLOR = '#27272a'; 
+const CHART_TEXT_COLOR = '#d4d4d8'; 
+
+const inputBaseClass = "w-full rounded-lg border border-zinc-700 bg-zinc-900 text-white p-2 outline-none transition-all duration-300 hover:border-zinc-400 hover:bg-zinc-800 focus:ring-2 focus:ring-white focus:border-white focus:shadow-[0_0_15px_rgba(255,255,255,0.2)]";
+const cardBaseClass = "bg-[#09090b] p-6 rounded-2xl shadow-sm border border-zinc-800 transition-all duration-500 hover:border-zinc-500 hover:shadow-[0_0_20px_rgba(255,255,255,0.05)]";
+
+// --- Helper Functions ---
+const calculateRobson = (parityCat, prevScar, fetuses, presentation, gestation, onset) => {
+  if (fetuses === 'Multiple') {
+    if (onset === 'Spontaneous') return '8a';
+    if (onset === 'Induced') return '8b';
+    return '8c'; 
+  }
+  if (presentation === 'Abnormal lie' || presentation === 'Transverse/Oblique') {
+    if (onset === 'Spontaneous') return '9a';
+    if (onset === 'Induced') return '9b';
+    return '9c';
+  }
+  if (presentation === 'Breech') {
+    if (parityCat === 'Nulliparous') {
+      if (onset === 'Spontaneous') return '6a';
+      if (onset === 'Induced') return '6b';
+      return '6c';
+    } else {
+      if (onset === 'Spontaneous') return '7a';
+      if (onset === 'Induced') return '7b';
+      return '7c';
+    }
+  }
+  if (gestation === '< 37') {
+    if (onset === 'Spontaneous') return '10a';
+    if (onset === 'Induced') return '10b';
+    return '10c';
+  }
+  if (parityCat === 'Nulliparous') {
+    if (onset === 'Spontaneous') return '1';
+    if (onset === 'Induced') return '2a';
+    return '2b'; 
+  }
+  if (prevScar && prevScar !== 'No previous scar') { 
+    if (onset === 'Spontaneous') return '5a';
+    if (onset === 'Induced') return '5b';
+    return '5c';
+  } else { 
+    if (onset === 'Spontaneous') return '3';
+    if (onset === 'Induced') return '4a';
+    return '4b';
+  }
+};
+
+const parseCSV = (text) => {
+  const normalizedText = text.replace(/\r/g, '');
+  const rows = normalizedText.split('\n').filter(row => row.trim() !== '');
+  if (rows.length < 2) return [];
+  const headers = rows[0].split(',').map(h => h.replace(/^"|"$/g, '').trim());
+  const data = [];
+  for (let i = 1; i < rows.length; i++) {
+    const rowData = rows[i].split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/);
+    const obj = {};
+    headers.forEach((header, index) => {
+      let val = rowData[index] ? rowData[index].replace(/^"|"$/g, '').trim() : '';
+      obj[header] = val;
+    });
+    data.push(obj);
+  }
+  return data;
+};
+
+const getVal = (row, possibleKeys) => {
+  const key = Object.keys(row).find(k => possibleKeys.includes(k.trim()));
+  return key ? row[key] : '';
+};
+
+export default function App() {
+  const [firebaseUser, setFirebaseUser] = useState(null);
+  const [allowedUsers, setAllowedUsers] = useState([]);
+  const [records, setRecords] = useState([]);
+  const [isImporting, setIsImporting] = useState(false);
+  const [loadingData, setLoadingData] = useState(true);
+  
+  const [emailInput, setEmailInput] = useState('');
+  const [currentUser, setCurrentUser] = useState(null); 
+
+  const [activeTab, setActiveTab] = useState('entry');
+  const [settingsEmail, setSettingsEmail] = useState('');
+  const [settingsRole, setSettingsRole] = useState('viewer');
+
+  useEffect(() => {
+    const initAuth = async () => {
+      try {
+        await signInAnonymously(auth);
+      } catch (err) {
+        console.error("Auth Error:", err);
+      }
+    };
+    initAuth();
+    const unsubscribe = onAuthStateChanged(auth, (u) => setFirebaseUser(u));
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (!firebaseUser) return;
+    const usersRef = collection(db, 'allowed_users');
+    const recordsRef = collection(db, 'census_records');
+
+    const unsubUsers = onSnapshot(usersRef, (snapshot) => {
+      setAllowedUsers(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+      setLoadingData(false);
+    }, console.error);
+
+    const unsubRecords = onSnapshot(recordsRef, (snapshot) => {
+      setRecords(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    }, console.error);
+
+    return () => { unsubUsers(); unsubRecords(); };
+  }, [firebaseUser]);
+
+  const handleLogin = async (e) => {
+    e.preventDefault();
+    if (!emailInput.trim()) return;
+    const emailStr = emailInput.trim().toLowerCase();
+    
+    if (allowedUsers.length === 0) {
+      try {
+        await addDoc(collection(db, 'allowed_users'), { email: emailStr, role: 'editor' });
+        setCurrentUser({ email: emailStr, role: 'editor' });
+      } catch (err) { alert("Failed to setup initial user. Check Firebase Rules."); }
+      return;
+    }
+
+    const foundUser = allowedUsers.find(u => u.email === emailStr);
+    if (foundUser) setCurrentUser(foundUser);
+    else alert("This email is not authorized. Please request access from an Editor.");
+  };
+
+  const handleLogout = () => { setCurrentUser(null); setEmailInput(''); };
+
+  const handleAddUser = async (e) => {
+    e.preventDefault();
+    if (!settingsEmail.trim()) return;
+    try {
+      await addDoc(collection(db, 'allowed_users'), { email: settingsEmail.trim().toLowerCase(), role: settingsRole });
+      setSettingsEmail('');
+      alert("User added successfully.");
+    } catch(err) { alert("Failed to add user."); }
+  };
+
+  const handleRemoveUser = async (id) => {
+    try { await deleteDoc(doc(db, 'allowed_users', id)); } 
+    catch(err) { alert("Failed to remove user."); }
+  };
+
+  const initialForm = {
+    date: new Date().toISOString().split('T')[0],
+    saNumber: '',
+    age: '',
+    race: 'Malay',
+    gestation: '> 37',
+    parityCategory: 'Nulliparous',
+    previousScar: 'No previous scar',
+    fetuses: 'Singleton',
+    presentation: 'Cephalic',
+    onset: 'Spontaneous',
+    
+    csDate: new Date().toISOString().split('T')[0],
+    csType: 'EMLSCS',
+    csIndication: '',
+    addProcedures: 'No additional Procedure',
+    
+    ebl: '<500',
+    apgar: '>7',
+    birthWeight: '3-4 kg',
+    nicu: 'No',
+    maternalComplications: 'Nil',
+    fetalOutcome: 'Alive',
+    media: [] 
+  };
+
+  const [formData, setFormData] = useState(initialForm);
+
+  const handleInputChange = (e) => {
+    const { name, value } = e.target;
+    setFormData({ ...formData, [name]: value });
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    const actualMode = 'Caesarean Section';
+    const robsonGroup = calculateRobson(
+      formData.parityCategory, formData.previousScar, formData.fetuses, 
+      formData.presentation, formData.gestation, formData.onset
+    );
+
+    const payload = {
+      ...formData,
+      actualMode,
+      robsonGroup: String(robsonGroup),
+      submittedBy: currentUser.email,
+      timestamp: new Date().toISOString()
+    };
+    
+    delete payload.media; 
+    
+    try {
+      await addDoc(collection(db, 'census_records'), payload);
+      setFormData(initialForm);
+      alert("Record successfully saved to Cloud!");
+      setActiveTab('dashboard'); 
+    } catch (error) {
+      alert("Failed to save to cloud. Please check connection.");
+      console.error(error);
+    }
+  };
+
+  const handleCSVImport = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    setIsImporting(true);
+    const reader = new FileReader();
+    
+    reader.onload = async (event) => {
+      try {
+        const text = event.target.result;
+        const parsedData = parseCSV(text);
+        let successCount = 0;
+
+        for (const row of parsedData) {
+          const saNum = getVal(row, ['SA NUMBER', 'SA No', 'saNumber']);
+          const timestampStr = getVal(row, ['Timestamp', 'date']);
+          if (!saNum && !timestampStr) continue;
+
+          let finalDate = timestampStr;
+          if (finalDate.includes('/')) {
+             const parts = finalDate.split(' ')[0].split('/'); 
+             if (parts.length === 3) finalDate = `${parts[2]}-${parts[1].padStart(2, '0')}-${parts[0].padStart(2, '0')}`;
+          } else {
+             finalDate = finalDate ? finalDate.split('T')[0] : new Date().toISOString().split('T')[0];
+          }
+          
+          let csDateRow = getVal(row, ['CSER DATE', 'csDate']);
+          if (csDateRow && csDateRow.includes('/')) {
+             const parts = csDateRow.split(' ')[0].split('/');
+             if (parts.length === 3) csDateRow = `${parts[2]}-${parts[1].padStart(2, '0')}-${parts[0].padStart(2, '0')}`;
+          }
+
+          const parityCat = getVal(row, ['PARITY', 'parityCategory']) || 'Nulliparous';
+          const prevScar = getVal(row, ['Previous Uterine Scar', 'previousScar']) || 'No previous scar';
+          const fetuses = getVal(row, ['Number of Fetus', 'fetuses']) || 'Singleton';
+          const pres = getVal(row, ['Fetal Presentation', 'presentation']) || 'Cephalic';
+          const gest = getVal(row, ['GESTATION', 'gestation']) || '> 37';
+          const onset = getVal(row, ['Onset of Labour', 'onset']) || 'Spontaneous';
+
+          const groupRobson = getVal(row, ['Robsons Criteria', 'robsonGroup']) || calculateRobson(parityCat, prevScar, fetuses, pres, gest, onset);
+
+          const payload = {
+            date: finalDate,
+            saNumber: saNum,
+            age: getVal(row, ['AGE', 'age']),
+            race: getVal(row, ['RACE', 'race']) || 'Malay',
+            gestation: gest,
+            parityCategory: parityCat,
+            previousScar: prevScar,
+            fetuses: fetuses,
+            presentation: pres,
+            onset: onset,
+            
+            csDate: csDateRow,
+            csType: getVal(row, ['Types of Caesarean Section', 'csType']) || 'EMLSCS',
+            csIndication: getVal(row, ['Please state the indication of caesarean section (Based on Post op Diagnosis)', 'Indication of caesarean section', 'csIndication']),
+            addProcedures: getVal(row, ['Additional Procedures', 'addProcedures']) || 'No additional Procedure',
+            
+            ebl: getVal(row, ['EBL (mL)', 'ebl']) || '<500',
+            apgar: getVal(row, ['APGAR SCORE', 'apgar']) || '>7',
+            birthWeight: getVal(row, ['Birth Weight', 'birthWeight']) || '3-4 kg',
+            nicu: getVal(row, ['NICU ADMISSION', 'nicu']) || 'No',
+            maternalComplications: getVal(row, ['Any Maternal Complication', 'maternalComplications']) || 'Nil',
+            fetalOutcome: getVal(row, ['Baby outcome', 'fetalOutcome']) || 'Alive',
+            
+            actualMode: 'Caesarean Section',
+            robsonGroup: String(groupRobson).trim(),
+            submittedBy: currentUser.email,
+            timestamp: new Date().toISOString()
+          };
+
+          await addDoc(collection(db, 'census_records'), payload);
+          successCount++;
+        }
+        alert(`Successfully imported ${successCount} records!`);
+        setActiveTab('dashboard');
+      } catch (error) {
+        console.error("Error importing CSV:", error);
+        alert("Error importing CSV. Format mismatch.");
+      } finally {
+        setIsImporting(false);
+        e.target.value = ''; 
+      }
+    };
+    reader.readAsText(file);
+  };
+
+  const handleExportRequest = () => {
+    if (currentUser?.role === 'editor') exportCSV();
+    else alert("Request Sent! The Editor has been notified to provide you with the exported data.");
+  };
+
+  const exportCSV = () => {
+    if (records.length === 0) return alert("No data to export.");
+    const outputData = records.map(r => ({
+      'Timestamp': r.timestamp,
+      'SA NUMBER': r.saNumber,
+      'AGE': r.age,
+      'RACE': r.race,
+      'GESTATION': r.gestation,
+      'PARITY': r.parityCategory,
+      'Previous Uterine Scar': r.previousScar,
+      'Number of Fetus': r.fetuses,
+      'Fetal Presentation': r.presentation,
+      'CSER DATE': r.csDate,
+      'Onset of Labour': r.onset,
+      'Types of Caesarean Section': r.csType,
+      'Please state the indication of caesarean section (Based on Post op Diagnosis)': r.csIndication,
+      'Additional Procedures': r.addProcedures,
+      'EBL (mL)': r.ebl,
+      'APGAR SCORE': r.apgar,
+      'Birth Weight': r.birthWeight,
+      'NICU ADMISSION': r.nicu,
+      'Baby outcome': r.fetalOutcome,
+      'Any Maternal Complication': r.maternalComplications,
+      'Robsons Criteria': r.robsonGroup,
+      'Actual Mode': r.actualMode || 'Caesarean Section'
+    }));
+
+    const headers = Object.keys(outputData[0]).join(',');
+    const rows = outputData.map(obj => Object.values(obj).map(val => `"${val}"`).join(','));
+    const csvContent = "data:text/csv;charset=utf-8," + [headers, ...rows].join('\n');
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement("a");
+    link.setAttribute("href", encodedUri);
+    link.setAttribute("download", `CSER_CENSUS_EXPORT_${new Date().toISOString().split('T')[0]}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const stats = useMemo(() => {
+    const total = records.length;
+    let csCount = 0;
+    
+    const robsonStatsMap = {};
+    ROBSON_CATEGORIES.forEach(cat => { robsonStatsMap[cat] = { group: cat, total: 0, cs: 0 }; });
+
+    const monthlyDataMap = {};
+    const csIndicationsMap = {};
+
+    records.forEach(r => {
+      const isCS = r.actualMode === 'Caesarean Section';
+      if (isCS) {
+        csCount++;
+        const ind = r.csIndication || 'Unspecified';
+        csIndicationsMap[ind] = (csIndicationsMap[ind] || 0) + 1;
+      }
+
+      const rGroup = r.robsonGroup;
+      if (robsonStatsMap[rGroup]) {
+        robsonStatsMap[rGroup].total++;
+        if (isCS) robsonStatsMap[rGroup].cs++;
+      }
+
+      const month = r.date ? r.date.substring(0, 7) : 'Unknown'; 
+      if (!monthlyDataMap[month]) monthlyDataMap[month] = { month, Total: 0, CS: 0 };
+      monthlyDataMap[month].Total++;
+      if (isCS) monthlyDataMap[month].CS++; 
+    });
+
+    return {
+      total, csCount, 
+      csRate: total > 0 ? ((csCount / total) * 100).toFixed(1) : 0,
+      robsonData: Object.values(robsonStatsMap).map(s => ({
+        ...s, csRate: s.total > 0 ? Math.round((s.cs / s.total) * 100) : 0
+      })),
+      monthlyData: Object.values(monthlyDataMap).sort((a, b) => a.month.localeCompare(b.month)),
+      csIndicationsData: Object.keys(csIndicationsMap).map(key => ({ name: key, count: csIndicationsMap[key] })).sort((a,b) => b.count - a.count)
+    };
+  }, [records]);
+
+  if (loadingData && firebaseUser) {
+    return <div className="min-h-screen bg-black flex items-center justify-center text-white">Connecting to secure server...</div>;
+  }
+
+  if (!currentUser) {
+    const isFirstRun = allowedUsers.length === 0;
+    return (
+      <div className="min-h-screen bg-black flex flex-col justify-center py-12 sm:px-6 lg:px-8">
+        <div className="sm:mx-auto sm:w-full sm:max-w-md text-center">
+          <Baby className="mx-auto h-12 w-12 text-white drop-shadow-[0_0_10px_rgba(255,255,255,0.5)]" />
+          <h2 className="mt-6 text-3xl font-extrabold text-white">ObsCen.com</h2>
+          <p className="mt-2 text-sm text-zinc-400">Secure CSER Census Portal</p>
+        </div>
+        <div className="mt-8 sm:mx-auto sm:w-full sm:max-w-md">
+          <div className="bg-[#09090b] py-8 px-4 shadow-[0_0_30px_rgba(255,255,255,0.05)] border border-zinc-800 sm:rounded-2xl sm:px-10 transition-all duration-500 hover:border-zinc-500">
+            {isFirstRun && (
+              <div className="mb-4 bg-red-950/30 border border-red-500 text-red-200 px-4 py-3 rounded text-sm shadow-[0_0_15px_rgba(239,68,68,0.2)]">
+                <strong className="text-red-500">Initial Setup:</strong> The system is empty. The first email entered will be registered as the Master Editor.
+              </div>
+            )}
+            <form onSubmit={handleLogin} className="space-y-6">
+              <div>
+                <label className="block text-sm font-medium text-white mb-1">Authorized Email Address</label>
+                <div className="mt-1 relative">
+                  <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                    <Mail className="h-5 w-5 text-zinc-500" />
+                  </div>
+                  <input type="email" required value={emailInput} onChange={e => setEmailInput(e.target.value)}
+                    className={`pl-10 ${inputBaseClass}`} placeholder="doctor@hospital.com" />
+                </div>
+              </div>
+              <button type="submit" className="w-full flex justify-center py-3 px-4 rounded-lg shadow-sm text-sm font-bold text-black bg-white hover:bg-zinc-200 transition-all duration-300 hover:shadow-[0_0_20px_rgba(255,255,255,0.5)] focus:outline-none">
+                Secure Access
+              </button>
+            </form>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const renderTabButton = (id, label, Icon) => (
+    <button onClick={() => setActiveTab(id)}
+      className={`flex items-center px-4 py-3 text-sm font-medium transition-all duration-300 ${
+        activeTab === id ? 'border-b-2 border-white text-white bg-zinc-900 shadow-[inset_0_-2px_10px_rgba(255,255,255,0.1)]' : 'text-zinc-500 hover:text-white hover:bg-zinc-900/50'
+      }`}>
+      <Icon className="w-4 h-4 mr-2" /> {label}
+    </button>
+  );
+
+  return (
+    <div className="min-h-screen bg-black text-white font-sans selection:bg-zinc-700 selection:text-white">
+      <header className="bg-[#09090b] shadow-sm border-b border-zinc-800 sticky top-0 z-50">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="flex justify-between items-center py-4">
+            <div className="flex items-center space-x-3">
+              <div className="bg-zinc-900 border border-zinc-800 p-2 rounded-lg shadow-[0_0_15px_rgba(255,255,255,0.1)]">
+                <Baby className="w-8 h-8 text-white" />
+              </div>
+              <h1 className="text-2xl font-bold text-white tracking-wide drop-shadow-md">ObsCen.com</h1>
+            </div>
+            <div className="flex items-center space-x-4 text-sm">
+              <div className="hidden sm:flex items-center text-zinc-400">
+                <Lock className="w-4 h-4 mr-1 text-white"/> Role: <span className="text-white ml-1 font-semibold uppercase">{currentUser.role}</span>
+              </div>
+              <button onClick={handleLogout} className="border border-zinc-700 hover:border-white hover:bg-white hover:text-black hover:shadow-[0_0_15px_rgba(255,255,255,0.4)] text-white px-4 py-1.5 rounded-lg transition-all duration-300 font-medium">Log Out</button>
+            </div>
+          </div>
+          <nav className="flex space-x-2 -mb-px overflow-x-auto">
+            {renderTabButton('entry', 'New Entry', ClipboardList)}
+            {renderTabButton('dashboard', 'Dashboard', ChartIcon)}
+            {renderTabButton('records', 'Record List', Activity)}
+            {currentUser.role === 'editor' && renderTabButton('settings', 'Settings', Settings)}
+          </nav>
+        </div>
+      </header>
+
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        {activeTab === 'entry' && (
+          <div className="space-y-8">
+            <div className={cardBaseClass}>
+              <h2 className="text-lg font-semibold text-white mb-4 flex items-center border-b border-zinc-800 pb-2">
+                <span className="bg-zinc-800 p-1.5 rounded mr-2"><UploadCloud className="w-4 h-4 text-white"/></span> CSER Census Data Import
+              </h2>
+              <p className="text-sm text-zinc-400 mb-4">Upload a previously exported CSER Census CSV file to quickly add records.</p>
+              <div className="flex items-center space-x-4">
+                <input type="file" accept=".csv" onChange={handleCSVImport} disabled={isImporting}
+                  className="block w-full text-sm text-zinc-400 file:mr-4 file:py-2.5 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-bold file:bg-white file:text-black hover:file:bg-zinc-200 file:transition-all file:cursor-pointer disabled:opacity-50" />
+                {isImporting && <span className="text-white text-sm font-bold animate-pulse whitespace-nowrap">Importing data...</span>}
+              </div>
+            </div>
+
+            <form onSubmit={handleSubmit} className="space-y-8">
+              <div className={cardBaseClass}>
+                <h2 className="text-lg font-semibold text-white mb-4 flex items-center border-b border-zinc-800 pb-2">
+                  <span className="bg-zinc-800 p-1.5 rounded mr-2"><ClipboardList className="w-4 h-4 text-white"/></span> Patient Details
+                </h2>
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mt-4">
+                  <div><label className="block text-sm font-medium text-white mb-1">Date</label><input type="date" name="date" required value={formData.date} onChange={handleInputChange} className={inputBaseClass} /></div>
+                  <div><label className="block text-sm font-medium text-white mb-1">SA Number</label><input type="text" name="saNumber" required value={formData.saNumber} onChange={handleInputChange} className={inputBaseClass} /></div>
+                  <div><label className="block text-sm font-medium text-white mb-1">Age</label><input type="number" name="age" required value={formData.age} onChange={handleInputChange} className={inputBaseClass} /></div>
+                  <div>
+                    <label className="block text-sm font-medium text-white mb-1">Race</label>
+                    <select name="race" value={formData.race} onChange={handleInputChange} className={inputBaseClass}>
+                      {RACES.map(r => <option key={r} value={r}>{r}</option>)}
+                    </select>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mt-4">
+                  <div>
+                    <label className="block text-sm font-medium text-white mb-1">Gestation</label>
+                    <select name="gestation" value={formData.gestation} onChange={handleInputChange} className={inputBaseClass}>
+                      {GESTATION_OPTS.map(o => <option key={o} value={o}>{o}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-white mb-1">Parity</label>
+                    <select name="parityCategory" value={formData.parityCategory} onChange={handleInputChange} className={inputBaseClass}>
+                      {PARITY_OPTS.map(o => <option key={o} value={o}>{o}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-white mb-1">Previous Uterine Scar</label>
+                    <select name="previousScar" value={formData.previousScar} onChange={handleInputChange} className={inputBaseClass}>
+                      {SCAR_OPTS.map(o => <option key={o} value={o}>{o}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-white mb-1">Number of Fetus</label>
+                    <select name="fetuses" value={formData.fetuses} onChange={handleInputChange} className={inputBaseClass}>
+                      {FETUS_OPTS.map(o => <option key={o} value={o}>{o}</option>)}
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              <div className={cardBaseClass}>
+                <h2 className="text-lg font-semibold text-white mb-4 flex items-center border-b border-zinc-800 pb-2">
+                  <span className="bg-zinc-800 p-1.5 rounded mr-2"><Activity className="w-4 h-4 text-white"/></span> Clinical & Labour Details
+                </h2>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-4">
+                  <div>
+                    <label className="block text-sm font-medium text-white mb-1">Fetal Presentation</label>
+                    <select name="presentation" value={formData.presentation} onChange={handleInputChange} className={inputBaseClass}>
+                      {PRESENTATION_OPTS.map(p => <option key={p} value={p}>{p}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-white mb-1">Onset of Labour</label>
+                    <select name="onset" value={formData.onset} onChange={handleInputChange} className={inputBaseClass}>
+                      {ONSET_OPTS.map(o => <option key={o} value={o}>{o}</option>)}
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              <div className={cardBaseClass}>
+                <h2 className="text-lg font-semibold text-white mb-4 flex items-center border-b border-zinc-800 pb-2">
+                  <span className="bg-zinc-800 p-1.5 rounded mr-2"><Baby className="w-4 h-4 text-white"/></span> Delivery Details
+                </h2>
+
+                <div className="bg-red-950/20 p-5 rounded-xl border border-red-500 mb-4 animate-in slide-in-from-bottom-2 duration-500 shadow-[0_0_20px_rgba(239,68,68,0.15)] hover:shadow-[0_0_30px_rgba(239,68,68,0.25)] transition-all mt-4">
+                  <div className="flex items-center text-red-500 font-bold mb-4 text-lg">
+                    <AlertTriangle className="w-6 h-6 mr-2 drop-shadow-[0_0_8px_rgba(239,68,68,0.8)]" /> 
+                    Caesarean Section Details
+                  </div>
+                  
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
+                    <div>
+                      <label className="block text-sm font-medium text-red-100 mb-1">CSER DATE</label>
+                      <input type="date" name="csDate" required value={formData.csDate} onChange={handleInputChange} 
+                        className="w-full rounded-lg border border-red-900/50 bg-black text-white p-2 outline-none transition-all focus:ring-2 focus:ring-red-500 focus:border-red-500 focus:shadow-[0_0_10px_rgba(239,68,68,0.4)]" />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-red-100 mb-1">Types of Caesarean Section</label>
+                      <select name="csType" value={formData.csType} onChange={handleInputChange} 
+                        className="w-full rounded-lg border border-red-900/50 bg-black text-white p-2 outline-none transition-all focus:ring-2 focus:ring-red-500 focus:border-red-500 focus:shadow-[0_0_10px_rgba(239,68,68,0.4)]">
+                        {CS_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+                      </select>
+                    </div>
+                    <div className="lg:col-span-2">
+                      <label className="block text-sm font-medium text-red-100 mb-1">Indication of CS (Post op Dx)</label>
+                      <input type="text" name="csIndication" value={formData.csIndication} onChange={handleInputChange} required 
+                        className="w-full rounded-lg border border-red-900/50 bg-black text-white p-2 outline-none transition-all focus:ring-2 focus:ring-red-500 focus:border-red-500 focus:shadow-[0_0_10px_rgba(239,68,68,0.4)]"
+                        placeholder="e.g. Fetal Compromise / Distress" />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-red-100 mb-1">Additional Procedures</label>
+                    <select name="addProcedures" value={formData.addProcedures} onChange={handleInputChange} 
+                      className="w-full md:w-1/2 rounded-lg border border-red-900/50 bg-black text-white p-2 outline-none transition-all focus:ring-2 focus:ring-red-500 focus:border-red-500 focus:shadow-[0_0_10px_rgba(239,68,68,0.4)]">
+                      {ADDITIONAL_PROCEDURES.map(p => <option key={p} value={p}>{p}</option>)}
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              <div className={cardBaseClass}>
+                 <h2 className="text-lg font-semibold text-white mb-4 flex items-center border-b border-zinc-800 pb-2">
+                  <span className="bg-zinc-800 p-1.5 rounded mr-2"><ClipboardList className="w-4 h-4 text-white"/></span> Outcomes
+                </h2>
+
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4 mt-4">
+                  <div>
+                    <label className="block text-sm font-medium text-white mb-1">EBL (mL)</label>
+                    <select name="ebl" value={formData.ebl} onChange={handleInputChange} className={inputBaseClass}>
+                      {EBL_OPTS.map(o => <option key={o} value={o}>{o}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-white mb-1">APGAR SCORE</label>
+                    <select name="apgar" value={formData.apgar} onChange={handleInputChange} className={inputBaseClass}>
+                      {APGAR_OPTS.map(o => <option key={o} value={o}>{o}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-white mb-1">Birth Weight</label>
+                    <select name="birthWeight" value={formData.birthWeight} onChange={handleInputChange} className={inputBaseClass}>
+                      {BIRTH_WEIGHT_OPTS.map(o => <option key={o} value={o}>{o}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-white mb-1">NICU ADMISSION</label>
+                    <select name="nicu" value={formData.nicu} onChange={handleInputChange} className={inputBaseClass}>
+                      {NICU_OPTS.map(o => <option key={o} value={o}>{o}</option>)}
+                    </select>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+                  <div>
+                    <label className="block text-sm font-medium text-white mb-1">Baby outcome</label>
+                    <select name="fetalOutcome" value={formData.fetalOutcome} onChange={handleInputChange} className={inputBaseClass}>
+                      {BABY_OUTCOME_OPTS.map(o => <option key={o} value={o}>{o}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-white mb-1">Any Maternal Complication</label>
+                    <input type="text" name="maternalComplications" value={formData.maternalComplications} onChange={handleInputChange} className={inputBaseClass} placeholder="Nil" />
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex justify-end pt-2 pb-10">
+                <button type="submit" className="bg-white text-black hover:bg-zinc-200 font-bold py-3.5 px-8 rounded-xl shadow-[0_0_15px_rgba(255,255,255,0.3)] hover:shadow-[0_0_25px_rgba(255,255,255,0.6)] transition-all duration-300 transform hover:-translate-y-1 flex items-center">
+                  <ClipboardList className="w-5 h-5 mr-2" /> Save Secure Record
+                </button>
+              </div>
+            </form>
+          </div>
+        )}
+
+        {activeTab === 'dashboard' && (
+          <div className="space-y-6">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className={`${cardBaseClass} flex items-center justify-between`}>
+                <div><p className="text-sm text-zinc-400 font-medium">Total Deliveries</p><h3 className="text-3xl font-bold text-white">{stats.total}</h3></div>
+                <div className="bg-zinc-800 p-3 rounded-xl border border-zinc-700 shadow-[0_0_15px_rgba(255,255,255,0.1)] text-white"><Baby /></div>
+              </div>
+              <div className={`${cardBaseClass} flex items-center justify-between`}>
+                <div><p className="text-sm text-zinc-400 font-medium">Total CS</p><h3 className="text-3xl font-bold text-white drop-shadow-[0_0_8px_rgba(255,255,255,0.5)]">{stats.csCount}</h3></div>
+                <div className="bg-zinc-800 p-3 rounded-xl border border-zinc-700 shadow-[0_0_15px_rgba(255,255,255,0.1)] text-white"><Activity /></div>
+              </div>
+              <div className={`${cardBaseClass} flex items-center justify-between`}>
+                <div><p className="text-sm text-zinc-400 font-medium">Overall CS Rate</p><h3 className="text-3xl font-bold text-white drop-shadow-[0_0_8px_rgba(255,255,255,0.5)]">{stats.csRate}%</h3></div>
+                <div className="bg-zinc-800 p-3 rounded-xl border border-zinc-700 shadow-[0_0_15px_rgba(255,255,255,0.1)] text-white"><ChartIcon /></div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 gap-6">
+              <div className={cardBaseClass}>
+                <h3 className="text-lg font-bold text-white mb-4">CS Indications Distribution</h3>
+                <div className="h-64">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={stats.csIndicationsData} layout="vertical" margin={{top: 5, right: 30, left: 100, bottom: 5}}>
+                      <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke={CHART_GRID_COLOR} />
+                      <XAxis type="number" stroke={CHART_TEXT_COLOR} />
+                      <YAxis dataKey="name" type="category" width={100} stroke={CHART_TEXT_COLOR} tick={{fontSize: 10, fill: CHART_TEXT_COLOR}} />
+                      <Tooltip cursor={{fill: '#27272a'}} contentStyle={{backgroundColor: '#09090b', borderColor: '#27272a', color: '#fff', boxShadow: '0 0 15px rgba(255,255,255,0.1)'}} itemStyle={{color: '#fff'}} />
+                      <Bar dataKey="count" fill="#ffffff" radius={[0, 4, 4, 0]} name="Occurrences" />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+            </div>
+
+            <div className={cardBaseClass}>
+              <div className="flex justify-between items-center mb-4">
+                <h3 className="text-lg font-bold text-white">Robson Classification (Detailed)</h3>
+              </div>
+              <div className="h-80">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={stats.robsonData} margin={{ top: 20, right: 30, left: 20, bottom: 20 }}>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={CHART_GRID_COLOR} />
+                    <XAxis dataKey="group" tick={{fontSize: 10, fill: CHART_TEXT_COLOR}} interval={0} stroke={CHART_TEXT_COLOR} />
+                    <YAxis stroke={CHART_TEXT_COLOR} />
+                    <Tooltip cursor={{fill: '#27272a'}} content={({ active, payload }) => {
+                      if (active && payload && payload.length) {
+                        const data = payload[0].payload;
+                        return (
+                          <div className="bg-[#09090b] p-4 border border-zinc-700 shadow-[0_0_15px_rgba(255,255,255,0.1)] rounded-lg text-white">
+                            <p className="font-bold text-lg border-b border-zinc-800 pb-2 mb-2">Group {data.group}</p>
+                            <p className="text-zinc-300">Total Deliveries: {data.total}</p>
+                            <p className="text-zinc-300">Total CS: <span className="text-white font-bold">{data.cs}</span></p>
+                            <p className="text-white font-bold mt-2">CS Rate: {data.csRate}%</p>
+                          </div>
+                        );
+                      }
+                      return null;
+                    }} />
+                    <Legend verticalAlign="top" height={36} wrapperStyle={{color: '#fff'}} />
+                    <Bar dataKey="total" name="Total Women" fill="#3f3f46" radius={[4, 4, 0, 0]} />
+                    <Bar dataKey="cs" name="Total CS" fill="#ffffff" radius={[4, 4, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+
+             <div className={cardBaseClass}>
+              <h3 className="text-lg font-bold text-white mb-4 flex items-center">
+                <Calendar className="w-5 h-5 mr-2 text-white" /> Monthly Trends
+              </h3>
+              <div className="h-72">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={stats.monthlyData}>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={CHART_GRID_COLOR} />
+                    <XAxis dataKey="month" stroke={CHART_TEXT_COLOR} />
+                    <YAxis stroke={CHART_TEXT_COLOR} />
+                    <Tooltip contentStyle={{backgroundColor: '#09090b', borderColor: '#27272a', color: '#fff', boxShadow: '0 0 15px rgba(255,255,255,0.1)'}} itemStyle={{color: '#fff'}} />
+                    <Legend wrapperStyle={{color: '#fff'}} />
+                    <Line type="monotone" dataKey="Total" stroke="#52525b" strokeWidth={3} dot={{r: 4, fill: '#52525b'}} activeDot={{r: 6, fill: '#fff'}} />
+                    <Line type="monotone" dataKey="CS" stroke="#ffffff" strokeWidth={3} dot={{r: 4, fill: '#fff'}} activeDot={{r: 6, fill: '#fff', stroke: '#000', strokeWidth: 2}} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'records' && (
+          <div className="bg-[#09090b] rounded-2xl shadow-sm border border-zinc-800 overflow-hidden transition-all duration-500 hover:border-zinc-500 hover:shadow-[0_0_20px_rgba(255,255,255,0.05)]">
+            <div className="p-4 border-b border-zinc-800 flex justify-between items-center bg-black">
+              <h2 className="text-lg font-bold text-white">Cloud Census Data</h2>
+              <button onClick={handleExportRequest} className="flex items-center space-x-2 bg-white hover:bg-zinc-200 text-black px-5 py-2.5 rounded-lg text-sm font-bold transition-all shadow-[0_0_10px_rgba(255,255,255,0.2)] hover:shadow-[0_0_15px_rgba(255,255,255,0.5)]">
+                {currentUser.role === 'editor' ? <Download className="w-4 h-4" /> : <Lock className="w-4 h-4" />}
+                <span>{currentUser.role === 'editor' ? 'Export CSV' : 'Request Print/Export'}</span>
+              </button>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm text-left text-zinc-300">
+                <thead className="text-xs text-white uppercase bg-zinc-900 border-b border-zinc-700">
+                  <tr>
+                    <th className="px-5 py-4">CS Date</th>
+                    <th className="px-5 py-4">SA No</th>
+                    <th className="px-5 py-4">Parity</th>
+                    <th className="px-5 py-4">Gest.</th>
+                    <th className="px-5 py-4">Mode</th>
+                    <th className="px-5 py-4">CS Indication</th>
+                    <th className="px-5 py-4">Robson</th>
+                    <th className="px-5 py-4">Submitter</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-zinc-800">
+                  {records.length === 0 ? (
+                     <tr><td colSpan="8" className="px-5 py-10 text-center text-zinc-500">No records found.</td></tr>
+                  ) : records.slice().sort((a,b) => new Date(b.timestamp) - new Date(a.timestamp)).map((rec) => (
+                    <tr key={rec.id} className="hover:bg-zinc-900/50 transition-colors">
+                      <td className="px-5 py-4">{rec.csDate || rec.date}</td>
+                      <td className="px-5 py-4 font-bold text-white">{rec.saNumber}</td>
+                      <td className="px-5 py-4">{rec.parityCategory}</td>
+                      <td className="px-5 py-4">{rec.gestation}</td>
+                      <td className="px-5 py-4">
+                        <span className={`px-3 py-1.5 rounded-full text-xs font-bold border ${rec.actualMode === 'Caesarean Section' ? 'bg-white text-black border-white shadow-[0_0_8px_rgba(255,255,255,0.5)]' : 'bg-zinc-800 text-zinc-300 border-zinc-600'}`}>
+                          {rec.actualMode === 'Vaginal Delivery' ? rec.vdType : 'CS'}
+                        </span>
+                      </td>
+                      <td className="px-5 py-4 text-xs">{rec.csIndication || '-'}</td>
+                      <td className="px-5 py-4 font-bold text-center text-white">Grp {rec.robsonGroup}</td>
+                      <td className="px-5 py-4 text-xs text-zinc-400">{rec.submittedBy}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'settings' && currentUser.role === 'editor' && (
+          <div className="space-y-6">
+            <div className={cardBaseClass}>
+              <h2 className="text-lg font-bold text-white mb-4 flex items-center border-b border-zinc-800 pb-2">
+                <span className="bg-zinc-800 p-1.5 rounded mr-2"><Users className="w-5 h-5 text-white" /></span> Authorized Users Management
+              </h2>
+              <p className="text-sm text-zinc-400 mb-6 mt-4">Only added emails can review data and submit entries. Editors have full export/setting privileges.</p>
+              
+              <form onSubmit={handleAddUser} className="flex flex-col md:flex-row gap-4 mb-8 bg-zinc-900 p-5 rounded-xl border border-zinc-800 items-end hover:border-zinc-600 transition-colors">
+                <div className="flex-1 w-full">
+                  <label className="block text-sm font-medium text-white mb-1">Email Address</label>
+                  <input type="email" required value={settingsEmail} onChange={e => setSettingsEmail(e.target.value)} className={inputBaseClass} placeholder="user@hospital.com" />
+                </div>
+                <div className="w-full md:w-48">
+                  <label className="block text-sm font-medium text-white mb-1">Role</label>
+                  <select value={settingsRole} onChange={e => setSettingsRole(e.target.value)} className={inputBaseClass}>
+                    <option value="viewer">Viewer (Entry/Review)</option>
+                    <option value="editor">Editor (Admin/Export)</option>
+                  </select>
+                </div>
+                <button type="submit" className="w-full md:w-auto bg-white hover:bg-zinc-200 text-black font-bold py-2.5 px-6 rounded-lg transition-all shadow-[0_0_10px_rgba(255,255,255,0.2)] hover:shadow-[0_0_15px_rgba(255,255,255,0.5)]">Add User</button>
+              </form>
+
+              <table className="w-full text-sm text-left text-zinc-300 border border-zinc-800 rounded-lg overflow-hidden">
+                <thead className="text-xs text-white uppercase bg-zinc-900 border-b border-zinc-800">
+                  <tr><th className="px-5 py-4">Email Address</th><th className="px-5 py-4">Role</th><th className="px-5 py-4 text-right">Actions</th></tr>
+                </thead>
+                <tbody className="divide-y divide-zinc-800">
+                  {allowedUsers.map(user => (
+                    <tr key={user.id} className="hover:bg-zinc-900/50 transition-colors">
+                      <td className="px-5 py-4 font-medium text-white">{user.email}</td>
+                      <td className="px-5 py-4">
+                        <span className={`px-2.5 py-1 rounded-md text-xs uppercase font-bold border ${user.role === 'editor' ? 'bg-zinc-800 text-white border-zinc-600' : 'bg-transparent text-zinc-400 border-zinc-700'}`}>{user.role}</span>
+                      </td>
+                      <td className="px-5 py-4 text-right">
+                        {user.email !== currentUser.email && (
+                          <button onClick={() => handleRemoveUser(user.id)} className="text-red-500 hover:text-red-400 hover:underline text-xs font-bold tracking-wider uppercase">Remove Access</button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+      </main>
+    </div>
+  );
+}
+{
+"rewrites": [
+{
+"source": "/(.*)",
+"destination": "/index.html"
+}
+]
+}
